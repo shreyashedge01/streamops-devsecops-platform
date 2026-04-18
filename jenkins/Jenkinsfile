@@ -1,0 +1,97 @@
+pipeline {
+agent any
+
+```
+environment {
+    AWS_REGION = 'ap-southeast-1'
+    AWS_ACCOUNT_ID = '590183945701'
+    IMAGE_NAME = 'streamops-app'
+    IMAGE_TAG = "build-${BUILD_NUMBER}"
+    ECR_REPO = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE_NAME}"
+    FULL_IMAGE = "${ECR_REPO}:${IMAGE_TAG}"
+    GITOPS_REPO = "https://github.com/shreyashedge01/streamops-gitops.git"
+}
+
+stages {
+
+    stage('Checkout Application Code') {
+        steps {
+            git branch: 'main', url: 'https://github.com/shreyashedge01/streamops-devsecops-platform.git'
+        }
+    }
+
+    stage('Build Docker Image') {
+        steps {
+            dir('app') {
+                sh '''
+                docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                '''
+            }
+        }
+    }
+
+    stage('Login to AWS ECR') {
+        steps {
+            sh '''
+            aws ecr get-login-password --region ${AWS_REGION} \
+            | docker login --username AWS --password-stdin ${ECR_REPO}
+            '''
+        }
+    }
+
+    stage('Push Docker Image') {
+        steps {
+            sh '''
+            docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${FULL_IMAGE}
+            docker push ${FULL_IMAGE}
+            '''
+        }
+    }
+
+    stage('Clone GitOps Repository') {
+        steps {
+            withCredentials([string(credentialsId: 'GITHUB_TOKEN', variable: 'github')]) {
+                sh '''
+                git clone https://$github@github.com/shreyashedge01/streamops-gitops.git
+                '''
+            }
+        }
+    }
+
+    stage('Update Kubernetes Manifests') {
+        steps {
+            dir('streamops-gitops/kubernetes') {
+                sh '''
+                sed -i 's|image:.*|image: '"${FULL_IMAGE}"'|' appdeployment.yml
+                '''
+            }
+        }
+    }
+
+    stage('Commit & Push Changes (GitOps)') {
+        steps {
+            withCredentials([string(credentialsId: 'GITHUB_TOKEN', variable: 'github')]) {
+                dir('streamops-gitops') {
+                    sh '''
+                    git config user.email "ci@streamops.com"
+                    git config user.name "StreamOps CI"
+
+                    git add .
+                    git commit -m "Updated image to ${FULL_IMAGE}" || echo "No changes"
+
+                    git push https://$github@github.com/shreyashedge01/streamops-gitops.git HEAD:main
+                    '''
+                }
+            }
+        }
+    }
+
+    stage('Deploy via ArgoCD') {
+        steps {
+            echo "ArgoCD will automatically detect changes and deploy to Kubernetes"
+        }
+    }
+}
+```
+
+}
